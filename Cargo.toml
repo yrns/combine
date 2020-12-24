@@ -7,7 +7,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures-signals = "0.3.15"
-pin-project = "0.4.22"
-futures = "0.3.5"
-easy-parallel = "3.1.0"
+futures-signals = "0.3.16"
+pin-project = "1.0.2"
+futures-lite = "1.11.3"
