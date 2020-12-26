@@ -17,42 +17,46 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Option<(Option<A::Item>, Option<B::Item>)> {
-        let mut done = 0;
+        let mut done = true;
         let mut this = self.project();
         let p = (
             {
                 match this.0.as_mut().as_pin_mut().map(|s| s.poll_change(cx)) {
-                    None => {
-                        done += 1;
+                    None => None,
+                    Some(Poll::Pending) => {
+                        done = false;
                         None
                     }
-                    Some(Poll::Pending) => None,
                     Some(Poll::Ready(None)) => {
                         this.0.set(None);
-                        done += 1;
                         None
                     }
-                    Some(Poll::Ready(a)) => a,
+                    Some(Poll::Ready(a)) => {
+                        done = false;
+                        a
+                    }
                 }
             },
             {
                 match this.1.as_mut().as_pin_mut().map(|s| s.poll_change(cx)) {
-                    None => {
-                        done += 1;
+                    None => None,
+                    Some(Poll::Pending) => {
+                        done = false;
                         None
                     }
-                    Some(Poll::Pending) => None,
                     Some(Poll::Ready(None)) => {
                         this.1.set(None);
-                        done += 1;
                         None
                     }
-                    Some(Poll::Ready(a)) => a,
+                    Some(Poll::Ready(a)) => {
+                        done = false;
+                        a
+                    }
                 }
             },
         );
 
-        if done == 2 {
+        if done {
             None
         } else {
             Some(p)
