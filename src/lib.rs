@@ -4,66 +4,6 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-trait PollAll<T> {
-    fn poll_all(self: Pin<&mut Self>, cx: &mut Context) -> Option<T>;
-}
-
-impl<A, B> PollAll<(Option<A::Item>, Option<B::Item>)> for Inputs2<A, B>
-where
-    A: Signal,
-    B: Signal,
-{
-    fn poll_all(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-    ) -> Option<(Option<A::Item>, Option<B::Item>)> {
-        let mut done = true;
-        let mut this = self.project();
-        let p = (
-            {
-                match this.0.as_mut().as_pin_mut().map(|s| s.poll_change(cx)) {
-                    None => None,
-                    Some(Poll::Pending) => {
-                        done = false;
-                        None
-                    }
-                    Some(Poll::Ready(None)) => {
-                        this.0.set(None);
-                        None
-                    }
-                    Some(Poll::Ready(a)) => {
-                        done = false;
-                        a
-                    }
-                }
-            },
-            {
-                match this.1.as_mut().as_pin_mut().map(|s| s.poll_change(cx)) {
-                    None => None,
-                    Some(Poll::Pending) => {
-                        done = false;
-                        None
-                    }
-                    Some(Poll::Ready(None)) => {
-                        this.1.set(None);
-                        None
-                    }
-                    Some(Poll::Ready(a)) => {
-                        done = false;
-                        a
-                    }
-                }
-            },
-        );
-
-        if done {
-            None
-        } else {
-            Some(p)
-        }
-    }
-}
-
 pub enum Input<T> {
     Changed(T),
     NotChanged(T),
@@ -79,39 +19,8 @@ impl<T> std::ops::Deref for Input<T> {
     }
 }
 
-// This exists solely for projection since pin-project doesn't handle
-// tuple struct members.
-#[pin_project]
-#[derive(Debug)]
-struct Inputs2<A, B>(#[pin] Option<A>, #[pin] Option<B>);
-
-#[pin_project]
-#[derive(Debug)]
-pub struct Combine2<A, B, C, F>
-where
-    A: Signal,
-    B: Signal,
-    F: Fn(Input<&A::Item>, Input<&B::Item>) -> C,
-{
-    #[pin]
-    inputs: Inputs2<A, B>,
-    last: (Option<A::Item>, Option<B::Item>),
-    f: F,
-}
-
-impl<A, B, C, F> Combine<F, Combine2<A, B, C, F>> for (A, B)
-where
-    A: Signal,
-    B: Signal,
-    F: Fn(Input<&A::Item>, Input<&B::Item>) -> C,
-{
-    fn combine(self, f: F) -> Combine2<A, B, C, F> {
-        Combine2 {
-            inputs: Inputs2(Some(self.0), Some(self.1)),
-            last: (None, None),
-            f,
-        }
-    }
+trait PollAll<T> {
+    fn poll_all(self: Pin<&mut Self>, cx: &mut Context) -> Option<T>;
 }
 
 pub trait Combine<F, T> {
@@ -122,50 +31,118 @@ pub fn combine<S, T: Combine<F, S>, F>(inputs: T, f: F) -> S {
     inputs.combine(f)
 }
 
-impl<A, B, C, F> Signal for Combine2<A, B, C, F>
-where
-    A: Signal,
-    B: Signal,
-    F: Fn(Input<&A::Item>, Input<&B::Item>) -> C,
-    A::Item: Debug,
-    B::Item: Debug,
-    C: Debug,
-{
-    type Item = C;
+macro_rules! impl_combine {
+    ($Inputs:ident, $Combine:ident, ($(($id:ident, $dc:ident, $i:tt, $None:expr)),+)) => {
 
-    fn poll_change(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        let mut last = &mut this.last;
-
-        match this.inputs.poll_all(cx) {
-            Some(p) => {
-                let ready = (
-                    match p.0 {
-                        Some(a) => {
-                            last.0 = Some(a);
-                            last.0.as_ref().map(Input::Changed)
+        impl<$($id: Signal),+> PollAll<($(Option<$id::Item>),+)> for $Inputs<$($id),+>
+        {
+            fn poll_all(
+                self: Pin<&mut Self>,
+                cx: &mut Context,
+            ) -> Option<($(Option<$id::Item>),+)> {
+                let mut done = true;
+                let mut this = self.project();
+                let p = ($(
+                    {
+                        match this.$i.as_mut().as_pin_mut().map(|s| s.poll_change(cx)) {
+                            None => None,
+                            Some(Poll::Pending) => {
+                                done = false;
+                                None
+                            }
+                            Some(Poll::Ready(None)) => {
+                                this.$i.set(None);
+                                None
+                            }
+                            Some(Poll::Ready(a)) => {
+                                done = false;
+                                a
+                            }
                         }
-                        None => last.0.as_ref().map(Input::NotChanged),
-                    },
-                    match p.1 {
-                        Some(a) => {
-                            last.1 = Some(a);
-                            last.1.as_ref().map(Input::Changed)
-                        }
-                        None => last.1.as_ref().map(Input::NotChanged),
-                    },
-                );
+                    }
+                ),+);
 
-                if let (Some(a), Some(b)) = ready {
-                    Poll::Ready(Some((this.f)(a, b)))
+                if done {
+                    None
                 } else {
-                    Poll::Pending
+                    Some(p)
                 }
             }
-            _ => Poll::Ready(None),
         }
-    }
+
+        // This exists solely for projection since pin-project doesn't handle
+        // tuple struct members.
+        #[pin_project]
+        #[derive(Debug)]
+        struct $Inputs<$($id),+>($(#[pin] Option<$id>),+);
+
+        #[pin_project]
+        #[derive(Debug)]
+        pub struct $Combine<$($id: Signal),+, Item, CombineFn>
+        where
+            CombineFn: Fn($(Input<&$id::Item>),+) -> Item,
+        {
+            #[pin]
+            inputs: $Inputs<$($id),+>,
+            last: ($(Option<$id::Item>),+),
+            f: CombineFn,
+        }
+
+        impl<$($id: Signal),+, Item, CombineFn> Combine<CombineFn, $Combine<$($id),+, Item, CombineFn>> for ($($id),+)
+        where
+            CombineFn: Fn($(Input<&$id::Item>),+) -> Item,
+        {
+            fn combine(self, f: CombineFn) -> $Combine<$($id),+, Item, CombineFn> {
+                $Combine {
+                    inputs: $Inputs($(Some(self.$i)),+),
+                    last: ($($None),+),
+                    f,
+                }
+            }
+        }
+
+        impl<$($id: Signal),+, Item, CombineFn> Signal for $Combine<$($id),+, Item, CombineFn>
+        where
+            CombineFn: Fn($(Input<&$id::Item>),+) -> Item,
+        {
+            type Item = Item;
+
+            fn poll_change(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+                let mut this = self.project();
+                let mut last = &mut this.last;
+
+                match this.inputs.poll_all(cx) {
+                    Some(p) => {
+                        let ready = ($(
+                            match p.$i {
+                                Some(a) => {
+                                    last.$i = Some(a);
+                                    last.$i.as_ref().map(Input::Changed)
+                                }
+                                None => last.$i.as_ref().map(Input::NotChanged),
+                            }
+                        ),+);
+
+                        if let ($(Some($dc)),+) = ready {
+                            Poll::Ready(Some((this.f)($($dc),+)))
+                        } else {
+                            Poll::Pending
+                        }
+                    }
+                    _ => Poll::Ready(None),
+                }
+            }
+        }
+
+    };
 }
+
+impl_combine!(Inputs2, Combine2, ((A, a, 0, None), (B, b, 1, None)));
+impl_combine!(
+    Inputs3,
+    Combine3,
+    ((A, a, 0, None), (B, b, 1, None), (C, c, 2, None))
+);
 
 #[cfg(test)]
 mod tests {
@@ -204,6 +181,19 @@ mod tests {
             assert_eq!(changes.next().await, Some(2));
             m1.set(1);
             assert_eq!(changes.next().await, Some(1));
+        });
+    }
+
+    #[test]
+    fn combine3() {
+        let m = Mutable::new(1usize);
+        let s1 = m.signal().map(|v| v * 15);
+        let s2 = m.signal().map(|v| v * 25);
+        let s3 = m.signal().map(|v| v + 1);
+        let sum = (s1, s2, s3).combine(|a, b, c| *a + *b + *c).to_stream();
+
+        block_on(async {
+            assert_eq!(sum.take(1).collect::<Vec<_>>().await, vec![42]);
         });
     }
 }
